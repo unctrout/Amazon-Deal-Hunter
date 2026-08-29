@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
-  <title>Amazon 90% Off Hunter</title>
+  <title>Amazon Deal Hunter</title>
 
   <style>
     * {
@@ -21,7 +21,7 @@
     header {
       background: #131921;
       color: white;
-      padding: 20px;
+      padding: 22px;
       text-align: center;
     }
 
@@ -60,15 +60,14 @@
 
     input {
       flex: 1;
-      min-width: 220px;
+      min-width: 230px;
     }
 
     select {
-      min-width: 140px;
+      min-width: 145px;
     }
 
     button {
-      background: #ff9900;
       border: none;
       padding: 14px 22px;
       border-radius: 8px;
@@ -77,8 +76,17 @@
       cursor: pointer;
     }
 
-    button:hover {
-      background: #e88b00;
+    .hunt-button {
+      background: #ff9900;
+      color: #111;
+    }
+
+    .top-button {
+      background: #d60000;
+      color: white;
+      width: 100%;
+      margin-top: 12px;
+      font-size: 19px;
     }
 
     .notice {
@@ -142,6 +150,19 @@
       position: relative;
     }
 
+    .rank-badge {
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      background: #131921;
+      color: white;
+      font-size: 15px;
+      font-weight: bold;
+      padding: 7px 9px;
+      border-radius: 8px;
+      z-index: 4;
+    }
+
     .deal-badge {
       position: absolute;
       top: 10px;
@@ -165,6 +186,7 @@
       font-weight: bold;
       padding: 5px 8px;
       border-radius: 6px;
+      z-index: 3;
     }
 
     .product-image {
@@ -250,10 +272,7 @@
         font-size: 24px;
       }
 
-      button {
-        width: 100%;
-      }
-
+      .hunt-button,
       select {
         width: 100%;
       }
@@ -264,8 +283,8 @@
 <body>
 
 <header>
-  <h1>🔥 Amazon 90% Off Hunter</h1>
-  <p>Search Amazon for extreme markdowns</p>
+  <h1>🔥 Amazon Deal Hunter</h1>
+  <p>Extreme markdown search + live Top 20</p>
 </header>
 
 <div class="search-panel">
@@ -286,17 +305,29 @@
       <option value="50">50%+ Off</option>
     </select>
 
-    <button onclick="huntDeals()">
+    <button
+      class="hunt-button"
+      onclick="huntDeals()"
+    >
       🔥 Hunt Deals
     </button>
 
   </div>
 
+  <button
+    class="top-button"
+    onclick="loadTop20()"
+  >
+    🏆 SHOW TOP 20 AMAZON DEALS
+  </button>
+
 </div>
 
 <div class="notice">
-  Amazon comparison prices can change. Always verify the
-  current price on Amazon before purchasing.
+  Deal percentages are calculated from Amazon current and
+  comparison prices returned by the live search data.
+  Prices can change quickly, so always verify the final
+  price on Amazon.
 </div>
 
 <div class="stats">
@@ -319,10 +350,13 @@
 </div>
 
 <div id="status">
-  Enter something above and tap Hunt Deals.
+  Search for a product or tap Top 20.
 </div>
 
-<div class="results" id="results"></div>
+<div
+  class="results"
+  id="results"
+></div>
 
 
 <script>
@@ -344,22 +378,21 @@ async function huntDeals() {
   const status =
     document.getElementById("status");
 
-  const resultsBox =
-    document.getElementById("results");
-
   status.textContent =
     "🔎 Searching Amazon for extreme deals...";
 
-  resultsBox.innerHTML = "";
+  clearResults();
 
   try {
 
-    const response = await fetch(
-      `/api/search?q=${encodeURIComponent(query)}` +
-      `&minDiscount=${minDiscount}`
-    );
+    const response =
+      await fetch(
+        `/api/search?q=${encodeURIComponent(query)}` +
+        `&minDiscount=${minDiscount}`
+      );
 
-    const data = await response.json();
+    const data =
+      await response.json();
 
     if (!response.ok) {
       throw new Error(
@@ -370,49 +403,17 @@ async function huntDeals() {
     const results =
       data.results || [];
 
-    document.getElementById(
-      "dealCount"
-    ).textContent = results.length;
-
-    if (results.length > 0) {
-
-      document.getElementById(
-        "bestDiscount"
-      ).textContent =
-        results[0].discountPercent + "%";
-
-    } else {
-
-      document.getElementById(
-        "bestDiscount"
-      ).textContent = "—";
-    }
-
-    document.getElementById(
-      "lastScan"
-    ).textContent =
-      new Date().toLocaleTimeString(
-        [],
-        {
-          hour: "numeric",
-          minute: "2-digit"
-        }
-      );
+    updateStats(results);
 
     if (results.length === 0) {
 
       status.textContent =
         `No ${minDiscount}%+ deals found for "${query}".`;
 
-      resultsBox.innerHTML = `
-        <div class="empty">
-          <h3>No extreme deals found</h3>
-          <p>
-            Try another search term or lower the
-            discount filter.
-          </p>
-        </div>
-      `;
+      showEmpty(
+        "No extreme deals found",
+        "Try another search term or lower the discount filter."
+      );
 
       return;
     }
@@ -420,7 +421,78 @@ async function huntDeals() {
     status.textContent =
       `🔥 Found ${results.length} deal(s) at ${minDiscount}% off or better.`;
 
-    results.forEach(product => {
+    renderProducts(results, false);
+
+  } catch(error) {
+
+    showError(error);
+  }
+
+}
+
+
+async function loadTop20() {
+
+  const status =
+    document.getElementById("status");
+
+  status.textContent =
+    "🏆 Scanning Amazon categories for the strongest deals...";
+
+  clearResults();
+
+  try {
+
+    const response =
+      await fetch("/api/top20");
+
+    const data =
+      await response.json();
+
+    if (!response.ok) {
+      throw new Error(
+        data.error || "Top 20 search failed."
+      );
+    }
+
+    const results =
+      data.results || [];
+
+    updateStats(results);
+
+    if (results.length === 0) {
+
+      status.textContent =
+        "No comparison-price deals were found during this scan.";
+
+      showEmpty(
+        "No Top 20 deals found",
+        "Try again later. Amazon search results and prices change throughout the day."
+      );
+
+      return;
+    }
+
+    status.textContent =
+      `🏆 Top ${results.length} Amazon deals found during this live scan.`;
+
+    renderProducts(results, true);
+
+  } catch(error) {
+
+    showError(error);
+  }
+
+}
+
+
+function renderProducts(results, showRank) {
+
+  const resultsBox =
+    document.getElementById("results");
+
+  results.forEach(
+    (product, index) => {
 
       const card =
         document.createElement("div");
@@ -430,6 +502,7 @@ async function huntDeals() {
       let stars = "";
 
       if (product.rating) {
+
         stars =
           `⭐ ${product.rating}`;
 
@@ -441,35 +514,39 @@ async function huntDeals() {
 
       const prime =
         product.prime
-        ? `<div class="prime-badge">prime</div>`
-        : "";
+          ? `<div class="prime-badge">prime</div>`
+          : "";
+
+      const rank =
+        showRank
+          ? `<div class="rank-badge">#${index + 1}</div>`
+          : "";
 
       const image =
-        product.image
-        ? product.image
-        : "https://via.placeholder.com/300?text=Amazon";
+        product.image ||
+        "https://via.placeholder.com/300?text=Amazon";
 
       const oldPrice =
         product.oldPriceText
-        ? `<span class="old-price">${product.oldPriceText}</span>`
-        : "";
+          ? `<span class="old-price">${escapeHtml(product.oldPriceText)}</span>`
+          : "";
 
       const savings =
         product.savings
-        ? `<div class="savings">
-             Save $${Number(product.savings).toFixed(2)}
-           </div>`
-        : "";
+          ? `<div class="savings">
+               Save $${Number(product.savings).toFixed(2)}
+             </div>`
+          : "";
 
       const asin =
         product.asin
-        ? `<div>ASIN: ${product.asin}</div>`
-        : "";
+          ? `<div>ASIN: ${escapeHtml(product.asin)}</div>`
+          : "";
 
       const delivery =
         product.delivery
-        ? `<div>${product.delivery}</div>`
-        : "";
+          ? `<div>${escapeHtml(product.delivery)}</div>`
+          : "";
 
       card.innerHTML = `
 
@@ -478,6 +555,7 @@ async function huntDeals() {
         </div>
 
         ${prime}
+        ${rank}
 
         <img
           class="product-image"
@@ -494,7 +572,7 @@ async function huntDeals() {
           <div class="price-row">
 
             <span class="price">
-              ${product.priceText}
+              ${escapeHtml(product.priceText || "")}
             </span>
 
             ${oldPrice}
@@ -526,24 +604,75 @@ async function huntDeals() {
 
       resultsBox.appendChild(card);
 
-    });
+    }
+  );
+}
 
-  }
 
-  catch(error) {
+function updateStats(results) {
 
-    console.error(error);
+  document.getElementById(
+    "dealCount"
+  ).textContent =
+    results.length;
 
-    status.textContent =
-      "⚠️ " + error.message;
+  document.getElementById(
+    "bestDiscount"
+  ).textContent =
+    results.length
+      ? results[0].discountPercent + "%"
+      : "—";
 
-    resultsBox.innerHTML = `
-      <div class="empty">
-        There was a problem searching Amazon.
-      </div>
-    `;
-  }
+  document.getElementById(
+    "lastScan"
+  ).textContent =
+    new Date().toLocaleTimeString(
+      [],
+      {
+        hour: "numeric",
+        minute: "2-digit"
+      }
+    );
+}
 
+
+function clearResults() {
+
+  document.getElementById(
+    "results"
+  ).innerHTML = "";
+}
+
+
+function showEmpty(title, message) {
+
+  document.getElementById(
+    "results"
+  ).innerHTML = `
+    <div class="empty">
+      <h3>${escapeHtml(title)}</h3>
+      <p>${escapeHtml(message)}</p>
+    </div>
+  `;
+}
+
+
+function showError(error) {
+
+  console.error(error);
+
+  document.getElementById(
+    "status"
+  ).textContent =
+    "⚠️ " + error.message;
+
+  document.getElementById(
+    "results"
+  ).innerHTML = `
+    <div class="empty">
+      There was a problem searching Amazon.
+    </div>
+  `;
 }
 
 
