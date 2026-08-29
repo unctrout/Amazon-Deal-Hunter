@@ -19,9 +19,7 @@ const CACHE_TTL_MS = 60 * 60 * 1000;
 const searchCache = new Map();
 
 
-// These searches are shared by Top 20 and Best Deals.
-// Because they share the same searches, the second
-// feature can reuse cached results.
+// Searches shared by Top 20 and Best Deals.
 
 const DEAL_SEARCHES = [
   "amazon deals",
@@ -43,7 +41,8 @@ function sendJSON(res, statusCode, data) {
 
   res.writeHead(statusCode, {
     "Content-Type": "application/json",
-    "Access-Control-Allow-Origin": "*"
+    "Access-Control-Allow-Origin": "*",
+    "Cache-Control": "no-store"
   });
 
   res.end(JSON.stringify(data));
@@ -75,7 +74,11 @@ function fetchJSON(url) {
 
           } catch (error) {
 
-            reject(error);
+            reject(
+              new Error(
+                "Could not read SerpApi response."
+              )
+            );
 
           }
 
@@ -90,87 +93,207 @@ function fetchJSON(url) {
 
 
 // ======================================================
-// NORMALIZE AMAZON PRODUCT
+// PRICE HELPERS
 // ======================================================
 
-function normalizeProduct(item) {
+function cleanNumber(value) {
 
-  const price =
-    Number(item.extracted_price);
+  const number =
+    Number(value);
 
-  const oldPrice =
-    Number(item.extracted_old_price);
+  return Number.isFinite(number)
+    ? number
+    : null;
+}
 
 
-  let discountPercent = 0;
+function calculateDeal(currentPrice, oldPrice) {
 
-  let savings = 0;
+  const current =
+    cleanNumber(currentPrice);
+
+  const old =
+    cleanNumber(oldPrice);
 
 
   if (
-    Number.isFinite(price) &&
-    Number.isFinite(oldPrice) &&
-    oldPrice > price &&
-    oldPrice > 0
+    current === null ||
+    current <= 0
   ) {
 
-    savings =
-      oldPrice - price;
+    return {
+      price: null,
+      oldPrice: null,
+      savings: 0,
+      discountPercent: 0,
+      validDeal: false
+    };
 
-    discountPercent =
-      Math.round(
-        (savings / oldPrice) * 100
-      );
+  }
+
+
+  if (
+    old === null ||
+    old <= current ||
+    old <= 0
+  ) {
+
+    return {
+      price: current,
+      oldPrice: null,
+      savings: 0,
+      discountPercent: 0,
+      validDeal: false
+    };
+
+  }
+
+
+  const savings =
+    old - current;
+
+
+  const discountPercent =
+    Math.round(
+      (savings / old) * 100
+    );
+
+
+  // Reject clearly broken or unreasonable
+  // comparison-price relationships.
+
+  if (
+    discountPercent <= 0 ||
+    discountPercent >= 90 ||
+    old > current * 10
+  ) {
+
+    return {
+      price: current,
+      oldPrice: null,
+      savings: 0,
+      discountPercent: 0,
+      validDeal: false
+    };
 
   }
 
 
   return {
 
-    asin:
-      item.asin || "",
+    price:
+      current,
+
+    oldPrice:
+      old,
+
+    savings:
+      Number(
+        savings.toFixed(2)
+      ),
+
+    discountPercent,
+
+    validDeal:
+      true
+
+  };
+
+}
+
+
+// ======================================================
+// CLEAN AMAZON LINK
+// ======================================================
+
+function buildAmazonLink(asin, fallbackLink) {
+
+  if (asin) {
+
+    return (
+      `https://www.amazon.com/dp/${encodeURIComponent(asin)}`
+    );
+
+  }
+
+
+  return fallbackLink || "";
+}
+
+
+// ======================================================
+// NORMALIZE AMAZON PRODUCT
+// ======================================================
+
+function normalizeProduct(item) {
+
+  const deal =
+    calculateDeal(
+      item.extracted_price,
+      item.extracted_old_price
+    );
+
+
+  const asin =
+    item.asin || "";
+
+
+  return {
+
+    asin,
 
     title:
-      item.title || "Amazon product",
+      item.title ||
+      "Amazon product",
 
 
     price:
-      Number.isFinite(price)
-        ? price
-        : null,
+      deal.price,
 
 
     priceText:
-      item.price ||
-      (
-        Number.isFinite(price)
-          ? `$${price.toFixed(2)}`
-          : ""
-      ),
+      deal.price !== null
+        ? `$${deal.price.toFixed(2)}`
+        : "",
 
 
     oldPrice:
-      Number.isFinite(oldPrice)
-        ? oldPrice
-        : null,
+      deal.oldPrice,
 
 
     oldPriceText:
-      item.old_price ||
-      (
-        Number.isFinite(oldPrice)
-          ? `$${oldPrice.toFixed(2)}`
-          : ""
-      ),
+      deal.oldPrice !== null
+        ? `$${deal.oldPrice.toFixed(2)}`
+        : "",
 
 
     savings:
-      savings > 0
-        ? Number(savings.toFixed(2))
-        : 0,
+      deal.savings,
 
 
-    discountPercent,
+    discountPercent:
+      deal.discountPercent,
+
+
+    validDeal:
+      deal.validDeal,
+
+
+    // IMPORTANT:
+    // Price came from an Amazon search-results page.
+    // It has NOT been independently verified against
+    // the individual Amazon product page.
+
+    priceVerified:
+      false,
+
+
+    priceSource:
+      "Amazon search result via SerpApi",
+
+
+    priceCheckedAt:
+      new Date().toISOString(),
 
 
     rating:
@@ -212,17 +335,21 @@ function normalizeProduct(item) {
       item.save_with_coupon || "",
 
 
+    offers:
+      Array.isArray(item.offers)
+        ? item.offers
+        : [],
+
+
     image:
       item.thumbnail || "",
 
 
     link:
-      item.link_clean ||
-      item.link ||
-      (
-        item.asin
-          ? `https://www.amazon.com/dp/${item.asin}`
-          : ""
+      buildAmazonLink(
+        asin,
+        item.link_clean ||
+        item.link
       ),
 
 
@@ -263,13 +390,10 @@ async function amazonSearch(query) {
     searchCache.get(cleanQuery);
 
 
-  // ----------------------------------
-  // Return cached result if still fresh
-  // ----------------------------------
-
   if (
     cached &&
-    Date.now() - cached.time < CACHE_TTL_MS
+    Date.now() - cached.time <
+    CACHE_TTL_MS
   ) {
 
     console.log(
@@ -319,7 +443,8 @@ async function amazonSearch(query) {
 
 
     const message =
-      String(data.error).toLowerCase();
+      String(data.error)
+        .toLowerCase();
 
 
     if (
@@ -344,23 +469,22 @@ async function amazonSearch(query) {
       data.organic_results || []
     )
       .map(normalizeProduct)
+
       .filter(
         product =>
           product.price !== null
       );
 
 
-  // ----------------------------------
-  // Save result for one hour
-  // ----------------------------------
-
   searchCache.set(
     cleanQuery,
     {
+
       time:
         Date.now(),
 
       products
+
     }
   );
 
@@ -403,6 +527,25 @@ function removeDuplicates(products) {
       unique.get(key);
 
 
+    // Prefer valid deal data.
+
+    if (
+      product.validDeal &&
+      !existing.validDeal
+    ) {
+
+      unique.set(
+        key,
+        product
+      );
+
+      continue;
+
+    }
+
+
+    // Otherwise prefer the stronger discount.
+
     if (
       product.discountPercent >
       existing.discountPercent
@@ -444,6 +587,9 @@ async function searchAmazon(
 
     .filter(
       product =>
+
+        product.validDeal &&
+
         product.discountPercent >=
         minDiscount
     )
@@ -462,6 +608,7 @@ async function searchAmazon(
           );
 
         }
+
 
         return (
           b.savings -
@@ -489,12 +636,8 @@ async function runDealScan() {
     );
 
 
-  const allProducts =
-    searchResults.flat();
-
-
   return removeDuplicates(
-    allProducts
+    searchResults.flat()
   );
 
 }
@@ -513,7 +656,11 @@ async function getTop20Deals() {
   const realDeals =
     deals.filter(
       product =>
+
+        product.validDeal &&
+
         product.oldPrice !== null &&
+
         product.discountPercent > 0
     );
 
@@ -570,46 +717,31 @@ async function getTop20Deals() {
 
 function calculateDealScore(product) {
 
-  /*
-    Maximum score is roughly 100.
-
-    Discount:
-    Up to 55 points
-
-    Rating:
-    Up to 15 points
-
-    Review count:
-    Up to 15 points
-
-    Dollar savings:
-    Up to 10 points
-
-    Prime:
-    Small bonus
-
-    Sponsored:
-    Small penalty
-  */
-
-
   let score = 0;
 
 
-  // ----------------------------------
-  // Discount score
-  // ----------------------------------
+  // Never give discount points to
+  // invalid comparison prices.
 
-  score +=
-    Math.min(
-      product.discountPercent,
-      100
-    ) * 0.55;
+  if (product.validDeal) {
+
+    score +=
+      Math.min(
+        product.discountPercent,
+        80
+      ) * 0.55;
 
 
-  // ----------------------------------
+    score +=
+      Math.min(
+        product.savings / 100,
+        1
+      ) * 10;
+
+  }
+
+
   // Rating score
-  // ----------------------------------
 
   if (product.rating) {
 
@@ -622,9 +754,7 @@ function calculateDealScore(product) {
   }
 
 
-  // ----------------------------------
   // Review score
-  // ----------------------------------
 
   if (product.reviews > 0) {
 
@@ -639,20 +769,7 @@ function calculateDealScore(product) {
   }
 
 
-  // ----------------------------------
-  // Savings score
-  // ----------------------------------
-
-  score +=
-    Math.min(
-      product.savings / 100,
-      1
-    ) * 10;
-
-
-  // ----------------------------------
   // Prime bonus
-  // ----------------------------------
 
   if (product.prime) {
 
@@ -661,9 +778,7 @@ function calculateDealScore(product) {
   }
 
 
-  // ----------------------------------
   // Sponsored penalty
-  // ----------------------------------
 
   if (product.sponsored) {
 
@@ -729,6 +844,8 @@ async function getBestDeals() {
 
       .filter(
         product =>
+
+          product.validDeal &&
 
           product.oldPrice !== null &&
 
@@ -914,8 +1031,11 @@ const server =
               searchesInScan:
                 DEAL_SEARCHES.length,
 
+              pricesVerifiedOnProductPage:
+                false,
+
               notice:
-                "Deals are ranked using discount percentage, dollar savings, ratings and review count. Amazon prices and availability can change quickly. Verify the final price on Amazon before purchasing."
+                "Prices shown are from Amazon search results returned by SerpApi and may differ from the individual Amazon product page. Always verify the final price on Amazon before purchasing."
 
             }
           );
@@ -971,8 +1091,11 @@ const server =
               searchesInScan:
                 DEAL_SEARCHES.length,
 
+              pricesVerifiedOnProductPage:
+                false,
+
               notice:
-                "These are the strongest Amazon markdowns found during the current category searches. They are not guaranteed to be the absolute top 20 deals across Amazon's entire catalog. Prices can change quickly."
+                "These are the strongest markdowns found in Amazon search results. Search-result prices can differ from the individual product page, so verify the final Amazon price before purchasing."
 
             }
           );
@@ -1034,7 +1157,7 @@ const server =
             Math.max(
               0,
               Math.min(
-                99,
+                89,
                 minDiscount
               )
             );
@@ -1064,8 +1187,11 @@ const server =
               cacheMinutes:
                 60,
 
+              pricesVerifiedOnProductPage:
+                false,
+
               notice:
-                "Discount percentages are calculated from Amazon current and comparison prices returned by the search data. Verify price and availability on Amazon before purchasing."
+                "Prices shown come from Amazon search results returned by SerpApi. Verify the current product-page price on Amazon before purchasing."
 
             }
           );
