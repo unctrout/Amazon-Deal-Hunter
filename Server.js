@@ -7,6 +7,35 @@ const PORT = process.env.PORT || 3000;
 
 
 // ======================================================
+// SETTINGS
+// ======================================================
+
+// Keep Amazon search results in memory for one hour.
+// This helps prevent repeated button presses from
+// using unnecessary SerpApi searches.
+
+const CACHE_TTL_MS = 60 * 60 * 1000;
+
+const searchCache = new Map();
+
+
+// These searches are shared by Top 20 and Best Deals.
+// Because they share the same searches, the second
+// feature can reuse cached results.
+
+const DEAL_SEARCHES = [
+  "amazon deals",
+  "electronics deals",
+  "home kitchen deals",
+  "tools deals",
+  "toys deals",
+  "beauty deals",
+  "automotive deals",
+  "outdoor deals"
+];
+
+
+// ======================================================
 // SEND JSON
 // ======================================================
 
@@ -145,11 +174,14 @@ function normalizeProduct(item) {
 
 
     rating:
-      item.rating || null,
+      Number(item.rating) || null,
 
 
     reviews:
-      item.reviews || 0,
+      Number(
+        String(item.reviews || 0)
+          .replace(/[^0-9]/g, "")
+      ) || 0,
 
 
     prime:
@@ -203,7 +235,7 @@ function normalizeProduct(item) {
 
 
 // ======================================================
-// SEARCH AMAZON
+// AMAZON SEARCH WITH 1-HOUR CACHE
 // ======================================================
 
 async function amazonSearch(query) {
@@ -221,6 +253,39 @@ async function amazonSearch(query) {
   }
 
 
+  const cleanQuery =
+    String(query || "deals")
+      .trim()
+      .toLowerCase();
+
+
+  const cached =
+    searchCache.get(cleanQuery);
+
+
+  // ----------------------------------
+  // Return cached result if still fresh
+  // ----------------------------------
+
+  if (
+    cached &&
+    Date.now() - cached.time < CACHE_TTL_MS
+  ) {
+
+    console.log(
+      `CACHE HIT: ${cleanQuery}`
+    );
+
+    return cached.products;
+
+  }
+
+
+  console.log(
+    `LIVE SERPAPI SEARCH: ${cleanQuery}`
+  );
+
+
   const params =
     new URLSearchParams({
 
@@ -231,7 +296,7 @@ async function amazonSearch(query) {
         "amazon.com",
 
       k:
-        query,
+        cleanQuery,
 
       api_key:
         apiKey
@@ -249,27 +314,119 @@ async function amazonSearch(query) {
 
   if (data.error) {
 
-    throw new Error(
-      data.error
-    );
+    const error =
+      new Error(data.error);
+
+
+    const message =
+      String(data.error).toLowerCase();
+
+
+    if (
+      message.includes("run out") ||
+      message.includes("searches") ||
+      message.includes("limit")
+    ) {
+
+      error.code =
+        "SERPAPI_LIMIT";
+
+    }
+
+
+    throw error;
 
   }
 
 
-  return (
-    data.organic_results || []
-  )
-    .map(normalizeProduct)
-    .filter(
-      product =>
-        product.price !== null
-    );
+  const products =
+    (
+      data.organic_results || []
+    )
+      .map(normalizeProduct)
+      .filter(
+        product =>
+          product.price !== null
+      );
+
+
+  // ----------------------------------
+  // Save result for one hour
+  // ----------------------------------
+
+  searchCache.set(
+    cleanQuery,
+    {
+      time:
+        Date.now(),
+
+      products
+    }
+  );
+
+
+  return products;
 
 }
 
 
 // ======================================================
-// NORMAL 90% SEARCH
+// REMOVE DUPLICATES
+// ======================================================
+
+function removeDuplicates(products) {
+
+  const unique =
+    new Map();
+
+
+  for (const product of products) {
+
+    const key =
+      product.asin ||
+      product.title.toLowerCase();
+
+
+    if (!unique.has(key)) {
+
+      unique.set(
+        key,
+        product
+      );
+
+      continue;
+
+    }
+
+
+    const existing =
+      unique.get(key);
+
+
+    if (
+      product.discountPercent >
+      existing.discountPercent
+    ) {
+
+      unique.set(
+        key,
+        product
+      );
+
+    }
+
+  }
+
+
+  return Array.from(
+    unique.values()
+  );
+
+}
+
+
+// ======================================================
+// NORMAL SEARCH
 // ======================================================
 
 async function searchAmazon(
@@ -318,43 +475,14 @@ async function searchAmazon(
 
 
 // ======================================================
-// TOP 20 AMAZON DEALS
+// RUN DEAL SCAN
 // ======================================================
 
-async function getTop20Deals() {
-
-  /*
-    Each phrase below performs one
-    SerpApi Amazon search.
-
-    We search several major Amazon
-    shopping areas to improve coverage.
-  */
-
-  const searches = [
-
-    "amazon deals",
-
-    "electronics deals",
-
-    "home kitchen deals",
-
-    "tools deals",
-
-    "toys deals",
-
-    "beauty deals",
-
-    "automotive deals",
-
-    "outdoor deals"
-
-  ];
-
+async function runDealScan() {
 
   const searchResults =
     await Promise.all(
-      searches.map(
+      DEAL_SEARCHES.map(
         query =>
           amazonSearch(query)
       )
@@ -365,73 +493,22 @@ async function getTop20Deals() {
     searchResults.flat();
 
 
-  // ----------------------------------
-  // Remove duplicate products
-  // ----------------------------------
+  return removeDuplicates(
+    allProducts
+  );
 
-  const unique =
-    new Map();
-
-
-  for (const product of allProducts) {
-
-    /*
-      ASIN is the best duplicate key.
-
-      If ASIN is missing,
-      fall back to title.
-    */
-
-    const key =
-      product.asin ||
-      product.title.toLowerCase();
+}
 
 
-    if (!unique.has(key)) {
+// ======================================================
+// TOP 20 AMAZON DEALS
+// ======================================================
 
-      unique.set(
-        key,
-        product
-      );
-
-    } else {
-
-      /*
-        If duplicate appears twice,
-        keep version with the
-        larger calculated discount.
-      */
-
-      const existing =
-        unique.get(key);
-
-
-      if (
-        product.discountPercent >
-        existing.discountPercent
-      ) {
-
-        unique.set(
-          key,
-          product
-        );
-
-      }
-
-    }
-
-  }
-
+async function getTop20Deals() {
 
   const deals =
-    Array.from(
-      unique.values()
-    );
+    await runDealScan();
 
-
-  // ----------------------------------
-  // Require actual comparison price
-  // ----------------------------------
 
   const realDeals =
     deals.filter(
@@ -440,10 +517,6 @@ async function getTop20Deals() {
         product.discountPercent > 0
     );
 
-
-  // ----------------------------------
-  // Rank biggest markdown first
-  // ----------------------------------
 
   realDeals.sort(
     (a, b) => {
@@ -483,13 +556,310 @@ async function getTop20Deals() {
   );
 
 
-  // ----------------------------------
-  // Return best 20
-  // ----------------------------------
-
   return realDeals.slice(
     0,
     20
+  );
+
+}
+
+
+// ======================================================
+// SMART DEAL SCORE
+// ======================================================
+
+function calculateDealScore(product) {
+
+  /*
+    Maximum score is roughly 100.
+
+    Discount:
+    Up to 55 points
+
+    Rating:
+    Up to 15 points
+
+    Review count:
+    Up to 15 points
+
+    Dollar savings:
+    Up to 10 points
+
+    Prime:
+    Small bonus
+
+    Sponsored:
+    Small penalty
+  */
+
+
+  let score = 0;
+
+
+  // ----------------------------------
+  // Discount score
+  // ----------------------------------
+
+  score +=
+    Math.min(
+      product.discountPercent,
+      100
+    ) * 0.55;
+
+
+  // ----------------------------------
+  // Rating score
+  // ----------------------------------
+
+  if (product.rating) {
+
+    score +=
+      Math.min(
+        product.rating / 5,
+        1
+      ) * 15;
+
+  }
+
+
+  // ----------------------------------
+  // Review score
+  // ----------------------------------
+
+  if (product.reviews > 0) {
+
+    score +=
+      Math.min(
+        Math.log10(
+          product.reviews + 1
+        ) / 4,
+        1
+      ) * 15;
+
+  }
+
+
+  // ----------------------------------
+  // Savings score
+  // ----------------------------------
+
+  score +=
+    Math.min(
+      product.savings / 100,
+      1
+    ) * 10;
+
+
+  // ----------------------------------
+  // Prime bonus
+  // ----------------------------------
+
+  if (product.prime) {
+
+    score += 2;
+
+  }
+
+
+  // ----------------------------------
+  // Sponsored penalty
+  // ----------------------------------
+
+  if (product.sponsored) {
+
+    score -= 3;
+
+  }
+
+
+  return Math.max(
+    0,
+    Math.round(
+      score * 10
+    ) / 10
+  );
+
+}
+
+
+// ======================================================
+// DEAL LABEL
+// ======================================================
+
+function getDealLabel(score) {
+
+  if (score >= 75) {
+
+    return "🔥 Exceptional Deal";
+
+  }
+
+
+  if (score >= 60) {
+
+    return "⭐ Great Deal";
+
+  }
+
+
+  if (score >= 45) {
+
+    return "👍 Good Deal";
+
+  }
+
+
+  return "Deal";
+
+}
+
+
+// ======================================================
+// BEST DEALS RIGHT NOW
+// ======================================================
+
+async function getBestDeals() {
+
+  const deals =
+    await runDealScan();
+
+
+  const qualified =
+    deals
+
+      .filter(
+        product =>
+
+          product.oldPrice !== null &&
+
+          product.discountPercent >= 20 &&
+
+          product.price !== null
+      )
+
+      .map(
+        product => {
+
+          const dealScore =
+            calculateDealScore(
+              product
+            );
+
+
+          return {
+
+            ...product,
+
+            dealScore,
+
+            dealLabel:
+              getDealLabel(
+                dealScore
+              )
+
+          };
+
+        }
+      );
+
+
+  qualified.sort(
+    (a, b) => {
+
+      if (
+        b.dealScore !==
+        a.dealScore
+      ) {
+
+        return (
+          b.dealScore -
+          a.dealScore
+        );
+
+      }
+
+
+      if (
+        b.discountPercent !==
+        a.discountPercent
+      ) {
+
+        return (
+          b.discountPercent -
+          a.discountPercent
+        );
+
+      }
+
+
+      return (
+        b.reviews -
+        a.reviews
+      );
+
+    }
+  );
+
+
+  return qualified.slice(
+    0,
+    20
+  );
+
+}
+
+
+// ======================================================
+// API ERROR HANDLER
+// ======================================================
+
+function handleAPIError(
+  res,
+  error,
+  fallbackMessage
+) {
+
+  console.error(error);
+
+
+  if (
+    error.code ===
+    "SERPAPI_LIMIT"
+  ) {
+
+    sendJSON(
+      res,
+      429,
+      {
+
+        error:
+          "Monthly SerpApi search limit reached.",
+
+        code:
+          "SERPAPI_LIMIT",
+
+        message:
+          "Your monthly SerpApi searches have been used. New live searches will work again when your plan resets or if additional searches are added."
+
+      }
+    );
+
+
+    return;
+
+  }
+
+
+  sendJSON(
+    res,
+    500,
+    {
+
+      error:
+        error.message ||
+        fallbackMessage
+
+    }
   );
 
 }
@@ -508,6 +878,63 @@ const server =
           req.url,
           `http://${req.headers.host || "localhost"}`
         );
+
+
+      // ==================================================
+      // BEST DEALS API
+      // ==================================================
+
+      if (
+        parsedUrl.pathname ===
+        "/api/bestdeals"
+      ) {
+
+        try {
+
+          const results =
+            await getBestDeals();
+
+
+          sendJSON(
+            res,
+            200,
+            {
+
+              count:
+                results.length,
+
+              results,
+
+              scanTime:
+                new Date().toISOString(),
+
+              cacheMinutes:
+                60,
+
+              searchesInScan:
+                DEAL_SEARCHES.length,
+
+              notice:
+                "Deals are ranked using discount percentage, dollar savings, ratings and review count. Amazon prices and availability can change quickly. Verify the final price on Amazon before purchasing."
+
+            }
+          );
+
+
+        } catch (error) {
+
+          handleAPIError(
+            res,
+            error,
+            "Best Deals search failed."
+          );
+
+        }
+
+
+        return;
+
+      }
 
 
       // ==================================================
@@ -538,8 +965,14 @@ const server =
               scanTime:
                 new Date().toISOString(),
 
+              cacheMinutes:
+                60,
+
+              searchesInScan:
+                DEAL_SEARCHES.length,
+
               notice:
-                "These are the strongest Amazon markdowns found during the current live category searches. They are not guaranteed to be the absolute top 20 deals across Amazon's entire catalog. Prices can change quickly. Verify the final price on Amazon before purchasing."
+                "These are the strongest Amazon markdowns found during the current category searches. They are not guaranteed to be the absolute top 20 deals across Amazon's entire catalog. Prices can change quickly."
 
             }
           );
@@ -547,19 +980,10 @@ const server =
 
         } catch (error) {
 
-          console.error(error);
-
-
-          sendJSON(
+          handleAPIError(
             res,
-            500,
-            {
-
-              error:
-                error.message ||
-                "Top 20 Amazon search failed."
-
-            }
+            error,
+            "Top 20 Amazon search failed."
           );
 
         }
@@ -637,6 +1061,9 @@ const server =
 
               results,
 
+              cacheMinutes:
+                60,
+
               notice:
                 "Discount percentages are calculated from Amazon current and comparison prices returned by the search data. Verify price and availability on Amazon before purchasing."
 
@@ -646,19 +1073,10 @@ const server =
 
         } catch (error) {
 
-          console.error(error);
-
-
-          sendJSON(
+          handleAPIError(
             res,
-            500,
-            {
-
-              error:
-                error.message ||
-                "Amazon search failed."
-
-            }
+            error,
+            "Amazon search failed."
           );
 
         }
