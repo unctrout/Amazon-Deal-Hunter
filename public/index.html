@@ -76,17 +76,35 @@
       cursor: pointer;
     }
 
+    button:disabled {
+      opacity: .6;
+      cursor: not-allowed;
+    }
+
     .hunt-button {
       background: #ff9900;
       color: #111;
+    }
+
+    .button-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      margin-top: 12px;
     }
 
     .top-button {
       background: #d60000;
       color: white;
       width: 100%;
-      margin-top: 12px;
-      font-size: 19px;
+      font-size: 18px;
+    }
+
+    .best-button {
+      background: #087f23;
+      color: white;
+      width: 100%;
+      font-size: 18px;
     }
 
     .notice {
@@ -102,7 +120,7 @@
       max-width: 1100px;
       margin: auto;
       display: grid;
-      grid-template-columns: repeat(3,1fr);
+      grid-template-columns: repeat(4,1fr);
       gap: 12px;
       padding: 0 10px 20px;
     }
@@ -189,6 +207,22 @@
       z-index: 3;
     }
 
+    .score-badge {
+      margin-top: 10px;
+      display: inline-block;
+      padding: 7px 10px;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: bold;
+      background: #e9f6ec;
+      color: #087f23;
+    }
+
+    .score-number {
+      margin-left: 6px;
+      color: #333;
+    }
+
     .product-image {
       width: 100%;
       height: 230px;
@@ -263,6 +297,21 @@
       border-radius: 14px;
     }
 
+    .limit-warning {
+      border: 2px solid #d60000;
+      background: #fff0f0;
+    }
+
+    @media (max-width: 750px) {
+      .stats {
+        grid-template-columns: 1fr 1fr;
+      }
+
+      .button-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+
     @media (max-width: 650px) {
       .stats {
         grid-template-columns: 1fr;
@@ -284,7 +333,7 @@
 
 <header>
   <h1>🔥 Amazon Deal Hunter</h1>
-  <p>Extreme markdown search + live Top 20</p>
+  <p>Extreme markdowns + Top 20 + smart deal scoring</p>
 </header>
 
 <div class="search-panel">
@@ -303,9 +352,12 @@
       <option value="80">80%+ Off</option>
       <option value="70">70%+ Off</option>
       <option value="50">50%+ Off</option>
+      <option value="30">30%+ Off</option>
+      <option value="20">20%+ Off</option>
     </select>
 
     <button
+      id="huntButton"
       class="hunt-button"
       onclick="huntDeals()"
     >
@@ -314,20 +366,34 @@
 
   </div>
 
-  <button
-    class="top-button"
-    onclick="loadTop20()"
-  >
-    🏆 SHOW TOP 20 AMAZON DEALS
-  </button>
+  <div class="button-grid">
+
+    <button
+      id="topButton"
+      class="top-button"
+      onclick="loadTop20()"
+    >
+      🏆 SHOW TOP 20 AMAZON DEALS
+    </button>
+
+    <button
+      id="bestButton"
+      class="best-button"
+      onclick="loadBestDeals()"
+    >
+      🔥 BEST DEALS RIGHT NOW
+    </button>
+
+  </div>
 
 </div>
 
 <div class="notice">
-  Deal percentages are calculated from Amazon current and
-  comparison prices returned by the live search data.
-  Prices can change quickly, so always verify the final
-  price on Amazon.
+  Amazon prices change quickly. Deal percentages and scores
+  are calculated from the current search data. The Best Deals
+  score considers markdown percentage, dollar savings, rating,
+  review count and other signals. Always verify the final price
+  on Amazon before purchasing.
 </div>
 
 <div class="stats">
@@ -343,6 +409,11 @@
   </div>
 
   <div class="stat">
+    <div class="stat-number" id="bestScore">—</div>
+    <div class="stat-label">Best Deal Score</div>
+  </div>
+
+  <div class="stat">
     <div class="stat-number" id="lastScan">—</div>
     <div class="stat-label">Last Scan</div>
   </div>
@@ -350,7 +421,7 @@
 </div>
 
 <div id="status">
-  Search for a product or tap Top 20.
+  Search for a product, tap Top 20, or check Best Deals.
 </div>
 
 <div
@@ -361,7 +432,25 @@
 
 <script>
 
+let isSearching = false;
+
+
+function setSearching(active) {
+
+  isSearching = active;
+
+  document.getElementById("huntButton").disabled = active;
+  document.getElementById("topButton").disabled = active;
+  document.getElementById("bestButton").disabled = active;
+
+}
+
+
 async function huntDeals() {
+
+  if (isSearching) {
+    return;
+  }
 
   const searchBox =
     document.getElementById("search");
@@ -382,6 +471,7 @@ async function huntDeals() {
     "🔎 Searching Amazon for extreme deals...";
 
   clearResults();
+  setSearching(true);
 
   try {
 
@@ -395,9 +485,7 @@ async function huntDeals() {
       await response.json();
 
     if (!response.ok) {
-      throw new Error(
-        data.error || "Search failed."
-      );
+      throw createAPIError(data);
     }
 
     const results =
@@ -421,11 +509,16 @@ async function huntDeals() {
     status.textContent =
       `🔥 Found ${results.length} deal(s) at ${minDiscount}% off or better.`;
 
-    renderProducts(results, false);
+    renderProducts(results, false, false);
 
   } catch(error) {
 
     showError(error);
+
+  } finally {
+
+    setSearching(false);
+
   }
 
 }
@@ -433,13 +526,18 @@ async function huntDeals() {
 
 async function loadTop20() {
 
+  if (isSearching) {
+    return;
+  }
+
   const status =
     document.getElementById("status");
 
   status.textContent =
-    "🏆 Scanning Amazon categories for the strongest deals...";
+    "🏆 Scanning Amazon categories for the strongest markdowns...";
 
   clearResults();
+  setSearching(true);
 
   try {
 
@@ -450,9 +548,7 @@ async function loadTop20() {
       await response.json();
 
     if (!response.ok) {
-      throw new Error(
-        data.error || "Top 20 search failed."
-      );
+      throw createAPIError(data);
     }
 
     const results =
@@ -467,26 +563,98 @@ async function loadTop20() {
 
       showEmpty(
         "No Top 20 deals found",
-        "Try again later. Amazon search results and prices change throughout the day."
+        "Try again later. Amazon results and prices change throughout the day."
       );
 
       return;
     }
 
     status.textContent =
-      `🏆 Top ${results.length} Amazon deals found during this live scan.`;
+      `🏆 Top ${results.length} Amazon markdowns found. Results are cached for up to 1 hour.`;
 
-    renderProducts(results, true);
+    renderProducts(results, true, false);
 
   } catch(error) {
 
     showError(error);
+
+  } finally {
+
+    setSearching(false);
+
   }
 
 }
 
 
-function renderProducts(results, showRank) {
+async function loadBestDeals() {
+
+  if (isSearching) {
+    return;
+  }
+
+  const status =
+    document.getElementById("status");
+
+  status.textContent =
+    "🔥 Ranking the strongest Amazon deals by discount, savings, ratings and reviews...";
+
+  clearResults();
+  setSearching(true);
+
+  try {
+
+    const response =
+      await fetch("/api/bestdeals");
+
+    const data =
+      await response.json();
+
+    if (!response.ok) {
+      throw createAPIError(data);
+    }
+
+    const results =
+      data.results || [];
+
+    updateStats(results);
+
+    if (results.length === 0) {
+
+      status.textContent =
+        "No qualifying Best Deals were found during this scan.";
+
+      showEmpty(
+        "No Best Deals found",
+        "Try again later as Amazon prices and search results change."
+      );
+
+      return;
+    }
+
+    status.textContent =
+      `🔥 Ranked the top ${results.length} deals found right now. Results are cached for up to 1 hour.`;
+
+    renderProducts(results, true, true);
+
+  } catch(error) {
+
+    showError(error);
+
+  } finally {
+
+    setSearching(false);
+
+  }
+
+}
+
+
+function renderProducts(
+  results,
+  showRank,
+  showScore
+) {
 
   const resultsBox =
     document.getElementById("results");
@@ -522,6 +690,18 @@ function renderProducts(results, showRank) {
           ? `<div class="rank-badge">#${index + 1}</div>`
           : "";
 
+      const score =
+        showScore && product.dealScore !== undefined
+          ? `
+            <div class="score-badge">
+              ${escapeHtml(product.dealLabel || "Deal")}
+              <span class="score-number">
+                Score ${Number(product.dealScore).toFixed(1)}
+              </span>
+            </div>
+          `
+          : "";
+
       const image =
         product.image ||
         "https://via.placeholder.com/300?text=Amazon";
@@ -548,10 +728,20 @@ function renderProducts(results, showRank) {
           ? `<div>${escapeHtml(product.delivery)}</div>`
           : "";
 
+      const bought =
+        product.boughtLastMonth
+          ? `<div>${escapeHtml(product.boughtLastMonth)}</div>`
+          : "";
+
+      const coupon =
+        product.coupon
+          ? `<div>Coupon: ${escapeHtml(product.coupon)}</div>`
+          : "";
+
       card.innerHTML = `
 
         <div class="deal-badge">
-          ${product.discountPercent}% OFF
+          ${Number(product.discountPercent || 0)}% OFF
         </div>
 
         ${prime}
@@ -559,7 +749,7 @@ function renderProducts(results, showRank) {
 
         <img
           class="product-image"
-          src="${image}"
+          src="${escapeAttribute(image)}"
           alt=""
         >
 
@@ -568,6 +758,8 @@ function renderProducts(results, showRank) {
           <div class="title">
             ${escapeHtml(product.title)}
           </div>
+
+          ${score}
 
           <div class="price-row">
 
@@ -587,12 +779,14 @@ function renderProducts(results, showRank) {
 
           <div class="details">
             ${delivery}
+            ${bought}
+            ${coupon}
             ${asin}
           </div>
 
           <a
             class="amazon-button"
-            href="${product.link}"
+            href="${escapeAttribute(product.link || "#")}"
             target="_blank"
             rel="noopener"
           >
@@ -606,6 +800,7 @@ function renderProducts(results, showRank) {
 
     }
   );
+
 }
 
 
@@ -616,12 +811,44 @@ function updateStats(results) {
   ).textContent =
     results.length;
 
+
+  const bestDiscount =
+    results.reduce(
+      (best, item) =>
+        Math.max(
+          best,
+          Number(item.discountPercent || 0)
+        ),
+      0
+    );
+
+
   document.getElementById(
     "bestDiscount"
   ).textContent =
     results.length
-      ? results[0].discountPercent + "%"
+      ? bestDiscount + "%"
       : "—";
+
+
+  const bestScore =
+    results.reduce(
+      (best, item) =>
+        Math.max(
+          best,
+          Number(item.dealScore || 0)
+        ),
+      0
+    );
+
+
+  document.getElementById(
+    "bestScore"
+  ).textContent =
+    bestScore
+      ? bestScore.toFixed(1)
+      : "—";
+
 
   document.getElementById(
     "lastScan"
@@ -633,6 +860,7 @@ function updateStats(results) {
         minute: "2-digit"
       }
     );
+
 }
 
 
@@ -641,6 +869,7 @@ function clearResults() {
   document.getElementById(
     "results"
   ).innerHTML = "";
+
 }
 
 
@@ -654,6 +883,24 @@ function showEmpty(title, message) {
       <p>${escapeHtml(message)}</p>
     </div>
   `;
+
+}
+
+
+function createAPIError(data) {
+
+  const error =
+    new Error(
+      data.message ||
+      data.error ||
+      "Search failed."
+    );
+
+  error.code =
+    data.code || "";
+
+  return error;
+
 }
 
 
@@ -661,18 +908,47 @@ function showError(error) {
 
   console.error(error);
 
-  document.getElementById(
-    "status"
-  ).textContent =
+  const status =
+    document.getElementById("status");
+
+  const results =
+    document.getElementById("results");
+
+
+  if (
+    error.code === "SERPAPI_LIMIT"
+  ) {
+
+    status.textContent =
+      "⛔ Monthly SerpApi search limit reached.";
+
+    results.innerHTML = `
+      <div class="empty limit-warning">
+        <h3>Monthly Search Limit Reached</h3>
+        <p>
+          Your SerpApi monthly searches have been used.
+          New live searches will work again after your
+          SerpApi allowance resets or additional searches
+          are added.
+        </p>
+      </div>
+    `;
+
+    return;
+
+  }
+
+
+  status.textContent =
     "⚠️ " + error.message;
 
-  document.getElementById(
-    "results"
-  ).innerHTML = `
+  results.innerHTML = `
     <div class="empty">
-      There was a problem searching Amazon.
+      <h3>Search Problem</h3>
+      <p>${escapeHtml(error.message)}</p>
     </div>
   `;
+
 }
 
 
@@ -682,9 +958,21 @@ function escapeHtml(text) {
     document.createElement("div");
 
   div.textContent =
-    text || "";
+    String(text || "");
 
   return div.innerHTML;
+
+}
+
+
+function escapeAttribute(text) {
+
+  return String(text || "")
+    .replace(/&/g, "&amp;")
+    .replace(/"/g, "&quot;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+
 }
 
 
